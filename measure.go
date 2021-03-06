@@ -3,6 +3,7 @@
 package measure
 
 import (
+	"fmt"
 	"io"
 	"time"
 
@@ -99,6 +100,39 @@ func New(prefix string, ds datastore.Datastore) *measure {
 		batchCommitErr: metrics.New(prefix+".batchcommit.errors_total", "Number of errored Batch.Commit calls").Counter(),
 		batchCommitLatency: metrics.New(prefix+".batchcommit.latency_seconds",
 			"Latency distribution of Batch.Commit calls").Histogram(datastoreLatencyBuckets),
+
+		txnPutNum: metrics.New(prefix+".txnput_total", "Total number of TxnDatastore.Put calls").Counter(),
+		txnPutErr: metrics.New(prefix+".txnput.errors_total", "Number of errored TxnDatastore.Put calls").Counter(),
+		txnPutLatency: metrics.New(prefix+".txnput.latency_seconds",
+			"Latency distribution of TxnDatastore.Put calls").Histogram(datastoreLatencyBuckets),
+		txnPutSize: metrics.New(prefix+".txnput.size_bytes",
+			"Size distribution of txn stored byte slices").Histogram(datastoreSizeBuckets),
+
+		txnGetNum: metrics.New(prefix+".txnget_total", "Total number of TxnDatastore.Get calls").Counter(),
+		txnGetErr: metrics.New(prefix+".txnget.errors_total", "Number of errored TxnDatastore.Get calls").Counter(),
+		txnGetLatency: metrics.New(prefix+".txnget.latency_seconds",
+			"Latency distribution of TxnDatastore.Get calls").Histogram(datastoreLatencyBuckets),
+		txnGetSize: metrics.New(prefix+".txnget.size_bytes",
+			"Size distribution of txn retrieved byte slices").Histogram(datastoreSizeBuckets),
+
+		txnHasNum: metrics.New(prefix+".txnhas_total", "Total number of TxnDatastore.Has calls").Counter(),
+		txnHasErr: metrics.New(prefix+".txnhas.errors_total", "Number of errored TxnDatastore.Has calls").Counter(),
+		txnHasLatency: metrics.New(prefix+".txnhas.latency_seconds",
+			"Latency distribution of TxnDatastore.Has calls").Histogram(datastoreLatencyBuckets),
+		txnGetSizeNum: metrics.New(prefix+".txngetsize_total", "Total number of TxnDatastore.GetSize calls").Counter(),
+		txnGetSizeErr: metrics.New(prefix+".txngetsize.errors_total", "Number of errored TxnDatastore.GetSize calls").Counter(),
+		txnGetSizeLatency: metrics.New(prefix+".txngetsize.latency_seconds",
+			"Latency distribution of TxnDatastore.GetSize calls").Histogram(datastoreLatencyBuckets),
+
+		txnDeleteNum: metrics.New(prefix+".txndelete_total", "Total number of TxnDatastore.Delete calls").Counter(),
+		txnDeleteErr: metrics.New(prefix+".txndelete.errors_total", "Number of errored TxnDatastore.Delete calls").Counter(),
+		txnDeleteLatency: metrics.New(prefix+".txndelete.latency_seconds",
+			"Latency distribution of TxnDatastore.Delete calls").Histogram(datastoreLatencyBuckets),
+
+		txnQueryNum: metrics.New(prefix+".txnquery_total", "Total number of TxnDatastore.Query calls").Counter(),
+		txnQueryErr: metrics.New(prefix+".txnquery.errors_total", "Number of errored TxnDatastore.Query calls").Counter(),
+		txnQueryLatency: metrics.New(prefix+".txnquery.latency_seconds",
+			"Latency distribution of TxnDatastore.Query calls").Histogram(datastoreLatencyBuckets),
 	}
 	return m
 }
@@ -164,6 +198,32 @@ type measure struct {
 	batchCommitNum     metrics.Counter
 	batchCommitErr     metrics.Counter
 	batchCommitLatency metrics.Histogram
+
+	txnPutNum     metrics.Counter
+	txnPutErr     metrics.Counter
+	txnPutLatency metrics.Histogram
+	txnPutSize    metrics.Histogram
+
+	txnGetNum     metrics.Counter
+	txnGetErr     metrics.Counter
+	txnGetLatency metrics.Histogram
+	txnGetSize    metrics.Histogram
+
+	txnHasNum     metrics.Counter
+	txnHasErr     metrics.Counter
+	txnHasLatency metrics.Histogram
+
+	txnGetSizeNum     metrics.Counter
+	txnGetSizeErr     metrics.Counter
+	txnGetSizeLatency metrics.Histogram
+
+	txnDeleteNum     metrics.Counter
+	txnDeleteErr     metrics.Counter
+	txnDeleteLatency metrics.Histogram
+
+	txnQueryNum     metrics.Counter
+	txnQueryErr     metrics.Counter
+	txnQueryLatency metrics.Histogram
 }
 
 func recordLatency(h metrics.Histogram, start time.Time) {
@@ -356,4 +416,102 @@ func (m *measure) Close() error {
 		return c.Close()
 	}
 	return nil
+}
+
+func (m *measure) NewTransaction(readOnly bool) (datastore.Txn, error) {
+	tds, ok := m.backend.(datastore.TxnDatastore)
+	if !ok {
+		return nil, fmt.Errorf("TxnDatastore not supported")
+	}
+
+	txn, err := tds.NewTransaction(readOnly)
+	if err != nil {
+		return nil, err
+	}
+
+	return &measuredTxn{
+		txn: txn,
+		m:   m,
+	}, nil
+}
+
+type measuredTxn struct {
+	txn datastore.Txn
+	m   *measure
+}
+
+func (mt *measuredTxn) Put(key datastore.Key, val []byte) error {
+	defer recordLatency(mt.m.txnPutLatency, time.Now())
+	mt.m.txnPutNum.Inc()
+	mt.m.txnPutSize.Observe(float64(len(val)))
+	err := mt.txn.Put(key, val)
+	if err != nil {
+		mt.m.txnPutErr.Inc()
+	}
+	return err
+}
+
+func (mt *measuredTxn) Delete(key datastore.Key) error {
+	defer recordLatency(mt.m.txnDeleteLatency, time.Now())
+	mt.m.txnDeleteNum.Inc()
+	err := mt.txn.Delete(key)
+	if err != nil {
+		mt.m.txnDeleteErr.Inc()
+	}
+	return err
+}
+
+func (mt *measuredTxn) Get(key datastore.Key) (value []byte, err error) {
+	defer recordLatency(mt.m.txnGetLatency, time.Now())
+	mt.m.txnGetNum.Inc()
+	value, err = mt.txn.Get(key)
+	switch err {
+	case nil:
+		mt.m.txnGetSize.Observe(float64(len(value)))
+	case datastore.ErrNotFound:
+	default:
+		mt.m.txnGetErr.Inc()
+	}
+	return value, err
+}
+
+func (mt *measuredTxn) GetSize(key datastore.Key) (size int, err error) {
+	defer recordLatency(mt.m.txnGetSizeLatency, time.Now())
+	mt.m.txnGetSizeNum.Inc()
+	size, err = mt.txn.GetSize(key)
+	switch err {
+	case nil, datastore.ErrNotFound:
+		// Not really an error.
+	default:
+		mt.m.txnGetSizeErr.Inc()
+	}
+	return size, err
+}
+
+func (mt *measuredTxn) Has(key datastore.Key) (exists bool, err error) {
+	defer recordLatency(mt.m.txnHasLatency, time.Now())
+	mt.m.txnHasNum.Inc()
+	exists, err = mt.txn.Has(key)
+	if err != nil {
+		mt.m.txnHasErr.Inc()
+	}
+	return exists, err
+}
+
+func (mt *measuredTxn) Query(q query.Query) (query.Results, error) {
+	defer recordLatency(mt.m.txnQueryLatency, time.Now())
+	mt.m.txnQueryNum.Inc()
+	res, err := mt.txn.Query(q)
+	if err != nil {
+		mt.m.txnQueryErr.Inc()
+	}
+	return res, err
+}
+
+func (mt *measuredTxn) Commit() error {
+	return mt.txn.Commit()
+
+}
+func (mt *measuredTxn) Discard() {
+	mt.txn.Discard()
 }

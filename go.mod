@@ -1,4 +1,4 @@
-module github.com/jsign/go-ds-measure
+module github.com/textileio/go-ds-measure
 
 require (
 	github.com/ipfs/go-datastore v0.4.1
